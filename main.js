@@ -1,169 +1,120 @@
 import * as THREE from 'three';
 import * as LocAR from 'locar';
+import { appendLog } from './logger.js';
 
-const raycaster = new THREE.Raycaster();
-const pointer = new THREE.Vector2();
-let fixedSphere;
+window.addEventListener('DOMContentLoaded', () => {
+  const canvas = document.getElementById('glscene');
 
-const camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.001, 1000);
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    alpha: true
+  });
 
-const renderer = new THREE.WebGLRenderer({
-    canvas: document.getElementById('glscene')
-});
-renderer.setSize(window.innerWidth, window.innerHeight);
-//document.body.appendChild(renderer.domElement);
+  const camera = new THREE.PerspectiveCamera(
+    80,
+    (canvas.clientWidth || 1) / (canvas.clientHeight || 1),
+    0.001,
+    1000
+  );
 
-const scene = new THREE.Scene();
+  const scene = new THREE.Scene();
 
-const locar = new LocAR.LocationBased(scene, camera);
+  // LocAR
+  const locar = new LocAR.LocationBased(scene, camera);
+  window.locar = locar;
+  const cam = new LocAR.Webcam({ video: { facingMode: 'environment' }, audio: false }, null);
 
-const cam = new LocAR.Webcam( { 
-    video: { facingMode: 'environment' }
-}, null);
 
-cam.on("webcamstarted", ev => {
+
+  cam.on('webcamstarted', ev => {
     scene.background = ev.texture;
-});
+    appendLog?.('Webcam started');
+  });
+  cam.on('webcamerror', err => alert(`Webcam error: code ${err.code} message ${err.message}`));
 
-cam.on("webcamerror", error => {
-    alert(`Webcam error: code ${error.code} message ${error.message}`);
-});
+  const deviceOrientationControls = new LocAR.DeviceOrientationControls(camera);
+  deviceOrientationControls.on('deviceorientationgranted', ev => { ev.target.connect(); appendLog?.('Device motion granted'); });
+  deviceOrientationControls.on('deviceorientationerror', err => alert(`Device orientation error: ${err.message || err}`));
+  deviceOrientationControls.init();
 
-window.addEventListener("resize", ev => {
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-});
+  locar.on('gpserror', err => alert(`GPS error: ${err.code}`));
 
-let firstLocation = true;
+  let firstLocation = true;
+  locar.on('gpsupdate', ev => {
+    if (!firstLocation) return;
+    appendLog?.(`Initial fix: lon ${ev.position.coords.longitude}, lat ${ev.position.coords.latitude}`);
 
-let deviceOrientationControls = new LocAR.DeviceOrientationControls(camera);
-
-deviceOrientationControls.on("deviceorientationgranted", ev => {
-    ev.target.connect();
-});
-
-deviceOrientationControls.on("deviceorientationerror", error => {
-    alert(`Device orientation error: code ${error.code} message ${error.message}`);
-});
-
-deviceOrientationControls.init();
-
-locar.on("gpserror", error => {
-    alert(`GPS error: ${error.code}`);
-});
-
-locar.on("gpsupdate", ev => {
-    if(firstLocation) {
-        alert(`Got the initial location: longitude ${ev.position.coords.longitude}, latitude ${ev.position.coords.latitude}`);
-
-        const boxProps = [{
-            latDis: 0.0005,
-            lonDis: 0,
-            colour: 0xff0000
-        }, {
-            latDis: -0.0005,
-            lonDis: 0,
-            colour: 0xffff00
-        }, {
-            latDis: 0,
-            lonDis: -0.0005,
-            colour: 0x00ffff
-        }, {
-            latDis: 0,
-            lonDis: 0.0005,
-            colour: 0x00ff00
-        }];
-
-        const geom = new THREE.BoxGeometry(2,2,2);
-
-        for(const boxProp of boxProps) {
-            const mesh = new THREE.Mesh(
-                geom, 
-                new THREE.MeshBasicMaterial({color: boxProp.colour})
-            );
-
-            locar.add(
-                mesh, 
-                ev.position.coords.longitude + boxProp.lonDis, 
-                ev.position.coords.latitude + boxProp.latDis
-            );
-        }
-
-        // === AJOUT D’UNE SPHERE À DES COORDONNÉES DÉFINIES ===
-        const fixedLatitude  = 46.22543;
-        const fixedLongitude = 7.36980;
-
-        const sphereGeom = new THREE.SphereGeometry(8, 32, 32);
-        const sphereMat = new THREE.MeshBasicMaterial({
-            color: 0x0000ff,
-            transparent: true,
-            opacity: 0.5
-        });
-
-        fixedSphere = new THREE.Mesh(sphereGeom, sphereMat);
-        fixedSphere.name = "fixedSphere";
-        fixedSphere.userData = { selected: false, baseScale: 1, baseColor: 0x0000ff };
-
-        locar.add(fixedSphere, fixedLongitude, fixedLatitude);
-
-        const canvas = renderer.domElement;
-
-        function getPointerNDC(ev) {
-            const rect = canvas.getBoundingClientRect();
-            const cx = (ev.clientX ?? ev.touches?.[0]?.clientX) - rect.left;
-            const cy = (ev.clientY ?? ev.touches?.[0]?.clientY) - rect.top;
-            pointer.x =  (cx / rect.width)  * 2 - 1;
-            pointer.y = -(cy / rect.height) * 2 + 1;
-        }
-
-        function onPointerDown(ev) {
-            getPointerNDC(ev);
-            raycaster.setFromCamera(pointer, camera);
-
-            if (!fixedSphere) return;
-                const hit = raycaster.intersectObject(fixedSphere, true);
-
-            if (hit.length) {
-                // Toggle d’état visuel simple
-                fixedSphere.userData.selected = !fixedSphere.userData.selected;
-                if (fixedSphere.userData.selected) {
-                fixedSphere.material.color.set(0xff1493); // rose vif
-                fixedSphere.scale.setScalar(fixedSphere.userData.baseScale * 1.3);
-                fixedSphere.material.opacity = 0.9;
-                // Exemple d’action : afficher des infos
-                // alert("Sphère sélectionnée !");
-                } else {
-                fixedSphere.material.color.set(fixedSphere.userData.baseColor);
-                fixedSphere.scale.setScalar(fixedSphere.userData.baseScale);
-                fixedSphere.material.opacity = 0.6;
-                }
-            }
-        }
-
-        canvas.addEventListener("pointerdown", onPointerDown, { passive: true });
-        canvas.addEventListener("touchstart",  onPointerDown, { passive: true });
-
-        // ================================================
-        
-        firstLocation = false;
-    }
-});
-
-locar.startGps();
-
-document.getElementById("setFakeLoc").addEventListener("click", e => {
-    alert("Using fake input GPS, not real GPS location");
-    locar.stopGps();
-    locar.fakeGps(
-        parseFloat(document.getElementById("fakeLon").value),
-        parseFloat(document.getElementById("fakeLat").value)
+    // Exemple: repère fixe
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(8, 32, 32),
+      new THREE.MeshBasicMaterial({ color: 0x0000ff, transparent: true, opacity: 0.5 })
     );
+    locar.add(sphere, 7.36980, 46.22543);
+    firstLocation = false;
+  });
+
+  // Ajuster le renderer au canvas (plein écran)
+  function resizeToCanvas() {
+    const w = canvas.clientWidth || window.innerWidth;
+    const h = canvas.clientHeight || window.innerHeight;
+    renderer.setSize(w, h, false);  // false = ne pas toucher au style CSS
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+
+  // Observez le canvas + changements d’orientation
+  new ResizeObserver(resizeToCanvas).observe(canvas);
+  window.addEventListener('resize', resizeToCanvas);
+  window.addEventListener('orientationchange', resizeToCanvas);
+
+  resizeToCanvas();
+
+  // Démarrage (sur certains mobiles, il vaut mieux déclencher après un geste utilisateur)
+  locar.startGps();
+
+  // Boucle de rendu
+  function animate() {
+    requestAnimationFrame(animate);
+    deviceOrientationControls.update?.();
+    renderer.render(scene, camera);
+  }
+
+  animate();
 });
 
-renderer.setAnimationLoop(animate);
 
-function animate() {
-    deviceOrientationControls?.update();
-    renderer.render(scene, camera);
+/* ────────────────── Test GPSUpdate (LocAR) ────────────────── */
+
+// Fonction exportable
+export function startLiveGps(callback) {
+  const handler = (ev) => {
+    const { latitude, longitude } = ev.position.coords;
+    callback({ latitude, longitude, raw: ev });
+  };
+
+  // On démarre l'écoute
+  locar.on("gpsupdate", handler);
+  console.log("[startLiveGps] Listener gpsupdate enregistré");
+
+  // On retourne une fonction d'arrêt *best effort*
+  return () => {
+    console.log("[startLiveGps] Tentative d'arrêt du listener gpsupdate");
+
+    if (typeof locar.off === "function") {
+      locar.off("gpsupdate", handler);
+    } else if (typeof locar.removeListener === "function") {
+      locar.removeListener("gpsupdate", handler);
+    } else if (typeof locar.removeEventListener === "function") {
+      locar.removeEventListener("gpsupdate", handler);
+    } else if (typeof locar.removeAllListeners === "function") {
+      locar.removeAllListeners("gpsupdate");
+    } else {
+      console.warn(
+        "[startLiveGps] Impossible de détacher gpsupdate proprement : aucune méthode off/removeListener/removeEventListener/removeAllListeners trouvée."
+      );
+    }
+  };
 }
+
+

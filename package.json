@@ -9,10 +9,16 @@
     "preview": "vite preview"
   },
   "devDependencies": {
+    "@capacitor/cli": "^7.4.4",
     "vite": "^7.1.7"
   },
   "dependencies": {
-    "locar": "^0.1.0",
+    "@capacitor/camera": "^7.0.2",
+    "@capacitor/core": "^7.4.4",
+    "@capacitor/device": "^7.0.2",
+    "@capacitor/geolocation": "^7.1.5",
+    "@capacitor/splash-screen": "^7.0.3",
+    "locar": "^0.1.2",
     "three": "^0.175.0"
   }
 }
