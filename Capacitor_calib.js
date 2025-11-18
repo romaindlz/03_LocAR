@@ -2,20 +2,33 @@ import { appendLog, saveLogsToFile, clearLogs } from './logger.js';
 import { getPosition } from './getPosition.js';
 
 
-
 /* ────────────────── Calibration GPS ────────────────── */
 // Point fixe de calibration
 const LatPFP = 46.22560;
 const LonPFP = 7.37000;
 
 // Correction (à appliquer aux positions futures)
-let calibLat = 0; // en degrés
+let calibLat = 0;
 let calibLon = 0;
 
-function metersPerDeg(latDeg) {
-  const mPerDegLat = 111320; // approx
-  const mPerDegLon = 111320 * Math.cos((latDeg * Math.PI) / 180);
-  return { mPerDegLat, mPerDegLon };
+function degToRad(deg) {
+  return (deg * Math.PI) / 180;
+}
+
+function haversineDistance(latKnown, lonKnown, latMean, lonMean) {
+  const r = 6371000; // rayon moyen Terre en mètres
+
+  const dlongitude = degToRad(lonKnown - lonMean);
+  const dlatitude  = degToRad(latKnown - latMean);
+
+  const a =
+    Math.sin(dlatitude / 2) * Math.sin(dlatitude / 2) +
+    Math.cos(degToRad(latMean)) *
+      Math.cos(degToRad(latKnown)) *
+      (Math.sin(dlongitude / 2) * Math.sin(dlongitude / 2));
+
+  const angle = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return angle * r;
 }
 
 function mean(arr) {
@@ -72,10 +85,15 @@ async function calibrateGpsFromGetPosition(latKnown, lonKnown) {
   // Échantillonnage en boucle avec getPosition()
   while ((Date.now() - start) < minDurationMs || samples.length < minSamples) {
     try {
-      const res = await getPosition(); // ← ta fonction existante
-      if (res?.ok && res.coords?.latitude != null && res.coords?.longitude != null) {
-        samples.push({ lat: res.coords.latitude, lon: res.coords.longitude });
-        appendLog(`lat: ${res.coords.latitude}, lon: ${coords.longitude}`);
+      const res = await getPosition();
+
+      const lat = res?.coords?.latitude;
+      const lon = res?.coords?.longitude;
+      //console.log('getPosition result:', lat, lon);
+
+      if (res?.ok && lat != null && lon != null) {
+        samples.push({ lat: lat, lon: lon });
+        appendLog(`lat: ${lat}, lon: ${lon}`);
       }
     } catch (e) {
       // on ignore cet échantillon
@@ -106,18 +124,15 @@ async function calibrateGpsFromGetPosition(latKnown, lonKnown) {
 
   appendLog(`lat std: ${latStdDeg}, lon std: ${lonStdDeg}`);
 
-  // Conversion en mètres (Nord/Est)
-  const { mPerDegLat, mPerDegLon } = metersPerDeg(latKnown);
-  const dNorth = dLatDeg * mPerDegLat;
-  const dEast  = dLonDeg * mPerDegLon;
+  // distance Haversine entre moyen mesuré et connu
+  const dHaversine = haversineDistance(latKnown, lonKnown, latMean, lonMean)
 
-  appendLog(`dNorth: ${dNorth}, dEast: ${dEast}`);
+  appendLog(`delta [m] : ${dHaversine}`);
   appendLog(`Calibration: ${samples.length} échantillons (−${removed} outliers, thr=${zThreshold})`);
-
 
   return {
     avgDeltaDeg: { dLat: dLatDeg, dLon: dLonDeg },
-    avgDeltaMeters: { dNorth, dEast },
+    dHaversine,
     stats: {
       samplesTotal: samples.length,
       samplesUsed: filtered.length,
@@ -132,6 +147,7 @@ async function calibrateGpsFromGetPosition(latKnown, lonKnown) {
 
 
 // ────────────────── Bouton de calibration ──────────────────
+
 document.getElementById('Calib')?.addEventListener('click', async () => {
   console.log('Calib clicked');
   alert('Calibration en cours… Placez-vous exactement sur le point connu et restez immobile ~5 s.');
@@ -141,7 +157,7 @@ document.getElementById('Calib')?.addEventListener('click', async () => {
     calibLat = res.avgDeltaDeg.dLat;
     calibLon = res.avgDeltaDeg.dLon;
 
-    const meters = `≈ dNorth ${res.avgDeltaMeters.dNorth.toFixed(2)} m, dEast ${res.avgDeltaMeters.dEast.toFixed(2)} m`;
+    const meters = `≈ distance [m] ${res.dHaversine.toFixed(2)}`;
     const degs   = `Δlat ${calibLat.toFixed(8)}°, Δlon ${calibLon.toFixed(8)}°`;
     const spread = `σ: lat ${res.stats.latResidualStdDeg.toExponential(2)}°, lon ${res.stats.lonResidualStdDeg.toExponential(2)}°  | utilisés: ${res.stats.samplesUsed}/${res.stats.samplesTotal}`;
 
@@ -155,6 +171,21 @@ document.getElementById('Calib')?.addEventListener('click', async () => {
 
 
 /* ────────────────── Fake GPS Loop (start/stop) ────────────────── */
+function applyCorrectionToCoords(lat, lon) {
+
+  console.log('Applying correction:', { lat, lon, calibLat, calibLon });
+  console.log('Corrected coords:', {
+    latitude: lat + calibLat,
+    longitude: lon + calibLon,
+  });
+
+  return {
+    latitude: lat + calibLat,
+    longitude: lon + calibLon,
+  };
+}
+
+
 const FAKE_GPS_INTERVAL = 1000; // en ms
 let fakeGpsLoopActive = false;
 let fakeGpsIntervalId = null;
@@ -192,7 +223,7 @@ async function startLiveCorrectedFakeGps() {
     if (!fakeGpsLoopActive) return;
     try {
       const r = await getPosition();
-      if (!r?.ok || !r.coords) return; // on ignore ce tick
+      if (!r?.ok || !r.coords) return;
 
       const corrected = applyCorrectionToCoords(r.coords.latitude, r.coords.longitude);
       window?.locar?.fakeGps?.(corrected.longitude, corrected.latitude);
@@ -222,16 +253,6 @@ async function stopFakeGpsLoop() {
   }
 }
 
-
-/**
- * Applique la correction de calibration à une position donnée
- */
-function applyCorrectionToCoords(lat, lon) {
-  return {
-    latitude: lat + calibLat,
-    longitude: lon + calibLon
-  };
-}
 
 // Bouton START : démarre la simulation GPS continue
 document.getElementById("ApplyCalib")?.addEventListener("click", async () => {

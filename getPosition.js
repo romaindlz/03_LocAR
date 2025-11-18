@@ -44,7 +44,7 @@ function warmupWatchPositionWeb({ enableHighAccuracy = true, timeout = 30000 } =
 
 
 // ─── Position (GPS) ─────────────────────────────────────────────
-export async function getPosition() {
+export async function OLD_getPosition() {
   const platform = Capacitor.getPlatform();
   const device = await Device.getInfo().catch(() => null);
 
@@ -154,30 +154,34 @@ export async function getPosition() {
   }
 }
 
-function locationToString(location) {
-        if (location == null || location == undefined) {
-          return ""
-        }
-        let stringRepresentation = 'Position'
+export async function getPosition() {
 
-        const timeRepresentation = location.timestamp ? new Date(location.timestamp).toISOString() : '-'
-        stringRepresentation += `- Time: ${timeRepresentation}\n`
-        stringRepresentation += `- Latitute: ${location?.coords.latitude}\n- Longitude: ${location?.coords.longitude}\n`
-        if (location?.coords.altitude || location?.coords.heading || location?.coords.speed) {
-          stringRepresentation += `- Altitude: ${location?.coords.altitude}\n- Heading: ${location?.coords.heading}\n- Speed: ${location?.coords.speed}\n`
-        }
-        stringRepresentation += `- Accuracy: ${location?.coords.accuracy}\n`
-        if (location?.coords.altitudeAccuracy) {
-          stringRepresentation += `- Altitude accuracy: ${location?.coords.altitudeAccuracy}\n`
-        }
-        return stringRepresentation
-      }
+  const platform = Capacitor.getPlatform();
+  const device = await Device.getInfo().catch(() => null);
 
+  const pos = await Geolocation.getCurrentPosition({
+    enableHighAccuracy: true,
+    maximumAge: 0,
+  });
+
+  return {
+      ok: true,
+      source: 'capacitor',
+      platform,
+      coords: pos.coords,
+      accuracy: pos.coords?.accuracy ?? null,
+      timestamp: pos.timestamp ?? Date.now(),
+      device,
+    };
+}
 
 // bouton getPosition
-document.getElementById("OLD_Pos")?.addEventListener("click", () => {
-  let location = getPosition();
-  console.log(location);
-  let output = locationToString(location);
-  console.log(output);
+document.getElementById("Pos")?.addEventListener("click", () => {
+  getPosition()
+    .then(res => {
+      console.log('Geo Capacitor position obtenue', res);
+    })
+    .catch(e => {
+      console.error('Exception getPosition:', e);
+    });
 });
