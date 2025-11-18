@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import * as LocAR from 'locar';
 import { appendLog } from './logger.js';
 
+const latObj = 46.22543;
+const lonObj = 7.36980;
+
+
 window.addEventListener('DOMContentLoaded', () => {
   const canvas = document.getElementById('glscene');
 
@@ -50,9 +54,10 @@ window.addEventListener('DOMContentLoaded', () => {
       new THREE.SphereGeometry(8, 32, 32),
       new THREE.MeshBasicMaterial({ color: 0x0000ff, transparent: true, opacity: 0.5 })
     );
-    locar.add(sphere, 7.36980, 46.22543);
+    locar.add(sphere, lonObj, latObj);
     firstLocation = false;
   });
+
 
   // Ajuster le renderer au canvas (plein écran)
   function resizeToCanvas() {
@@ -118,3 +123,29 @@ export function startLiveGps(callback) {
 }
 
 
+const indexedObjects = {};
+let buildingsVisible = false;
+
+async function loadBuildings() {
+    const response = await fetch(`https://hikar.org/webapp/map?bbox=${lonObj-0.02},${latObj-0.02},${lonObj+0.02},${latObj+0.02}&layers=poi&outProj=4326`);
+    const pois = await response.json();
+
+    pois.features.forEach ( poi => {
+        if(!indexedObjects[poi.properties.osm_id]) {
+            const mat  = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.6 });
+            const cube = new THREE.BoxGeometry(20, 20, 20);
+            const mesh = new THREE.Mesh(
+                cube,
+                mat
+            );                
+
+            locar.add(mesh, poi.geometry.coordinates[0], poi.geometry.coordinates[1], 0, poi.properties);
+            indexedObjects[poi.properties.osm_id] = mesh;
+        }
+    });
+  }
+
+
+document.getElementById("Serveur")?.addEventListener("click", () => {
+  loadBuildings();
+});
