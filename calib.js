@@ -1,15 +1,14 @@
 import { appendLog, saveLogsToFile, clearLogs } from './logger.js';
-import { startLiveGps } from './main.js';
-
+import { getPosition } from './getPosition.js';
 
 
 /* ────────────────── Calibration GPS ────────────────── */
 // Point fixe de calibration
-const LatPFP = 46.24678;
-const LonPFP = 7.41186;
+const LatPFP = 46.77950;
+const LonPFP = 6.65930;
 
 // Correction (à appliquer aux positions futures)
-let calibLat = 0; // en degrés
+let calibLat = 0;
 let calibLon = 0;
 
 function degToRad(deg) {
@@ -32,7 +31,6 @@ function haversineDistance(latKnown, lonKnown, latMean, lonMean) {
   return angle * r;
 }
 
-
 function mean(arr) {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 }
@@ -44,7 +42,7 @@ function std(arr) {
 }
 
 
-/* ───────── Calibration avec startLiveGps() + filtrage outliers ───────── */
+/* ───────── Calibration avec getPosition() + filtrage outliers ───────── */
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 //https://statisticsbyjim.com/basics/outliers/
@@ -68,67 +66,44 @@ function filterOutliers2D(points, zThreshold = 2.5) {
 }
 
 /**
- * Calibre via startLiveGps() en bouclant pendant >= minDurationMs et >= minSamples.
+ * Calibre via getPosition() en bouclant pendant >= minDurationMs et >= minSamples.
  * @param {number} latKnown
  * @param {number} lonKnown
  */
 async function calibrateGpsFromGetPosition(latKnown, lonKnown) {
-  const minDurationMs    = 5000;
-  const minSamples       = 10;
-  const sampleIntervalMs = 500;
-  const zThreshold       = 2.5;
+  const minDurationMs   = 5000;
+  const minSamples      = 10;
+  const sampleIntervalMs= 500;
+  const zThreshold      = 2.5;
 
+  const start = Date.now();
   const samples = [];
-  const start   = Date.now();
-  let lastSampleTime = 0;
 
-  console.log("[calibrate] Début de la calibration GPS…");
+  // si tu as un service GPS interne
+  try { window?.locar?.stopGps?.(); } catch(e) {}
 
-  await new Promise((resolve, reject) => {
-    // 1) On démarre l'écoute continue
-    const stopGps = startLiveGps(({ latitude, longitude }) => {
-      const now = Date.now();
+  // Échantillonnage en boucle avec getPosition()
+  while ((Date.now() - start) < minDurationMs || samples.length < minSamples) {
+    try {
+      const res = await getPosition();
 
-      if (now - lastSampleTime < sampleIntervalMs) return;
-      lastSampleTime = now;
+      const lat = res?.coords?.latitude;
+      const lon = res?.coords?.longitude;
+      //console.log('getPosition result:', lat, lon);
 
-      samples.push({ lat: latitude, lon: longitude });
-      console.log(
-        `Sample ${samples.length} → lat: ${latitude}, lon: ${longitude}`
-      );
-      appendLog?.(
-        `Sample ${samples.length} → lat: ${latitude}, lon: ${longitude}`
-      );
-
-      // Condition d’arrêt : durée min + nombre min
-      if ((now - start) >= minDurationMs && samples.length >= minSamples) {
-        console.log("[calibrate] Conditions atteintes, arrêt de l'écoute GPS.");
-        stopGps?.();
-        resolve();
+      if (res?.ok && lat != null && lon != null) {
+        samples.push({ lat: lat, lon: lon });
+        appendLog(`lat: ${lat}, lon: ${lon}`);
       }
-    });
-
-    setTimeout(() => {
-      if (!samples.length) {
-        console.error(
-          "[calibrate] Timeout : aucun échantillon reçu pendant la calibration."
-        );
-        stopGps?.();
-        reject(new Error("Aucun échantillon reçu pendant la calibration."));
-      } else {
-
-        console.warn(
-          "[calibrate] Timeout global atteint, mais des échantillons existent. On laisse la logique d’arrêt interne décider."
-        );
-      }
-    }, minDurationMs * 3);
-  });
+    } catch (e) {
+      // on ignore cet échantillon
+    }
+    await sleep(sampleIntervalMs);
+  }
 
   if (!samples.length) {
     throw new Error("Aucun échantillon reçu pendant la calibration.");
   }
-
-  console.log(`[calibrate] ${samples.length} échantillons collectés.`);
 
   // Filtrage outliers 2D (z-score sur lat et lon)
   const filtered = filterOutliers2D(samples, zThreshold);
@@ -149,11 +124,11 @@ async function calibrateGpsFromGetPosition(latKnown, lonKnown) {
 
   appendLog(`lat std: ${latStdDeg}, lon std: ${lonStdDeg}`);
 
+  // distance Haversine entre moyen mesuré et connu
   const dHaversine = haversineDistance(latKnown, lonKnown, latMean, lonMean)
 
   appendLog(`delta [m] : ${dHaversine}`);
   appendLog(`Calibration: ${samples.length} échantillons (−${removed} outliers, thr=${zThreshold})`);
-
 
   return {
     avgDeltaDeg: { dLat: dLatDeg, dLon: dLonDeg },
@@ -172,6 +147,7 @@ async function calibrateGpsFromGetPosition(latKnown, lonKnown) {
 
 
 // ────────────────── Bouton de calibration ──────────────────
+
 document.getElementById('Calib')?.addEventListener('click', async () => {
   console.log('Calib clicked');
   alert('Calibration en cours… Placez-vous exactement sur le point connu et restez immobile ~5 s.');
@@ -195,6 +171,21 @@ document.getElementById('Calib')?.addEventListener('click', async () => {
 
 
 /* ────────────────── Fake GPS Loop (start/stop) ────────────────── */
+function applyCorrectionToCoords(lat, lon) {
+
+  console.log('Applying correction:', { lat, lon, calibLat, calibLon });
+  console.log('Corrected coords:', {
+    latitude: lat + calibLat,
+    longitude: lon + calibLon,
+  });
+
+  return {
+    latitude: lat + calibLat,
+    longitude: lon + calibLon,
+  };
+}
+
+
 const FAKE_GPS_INTERVAL = 1000; // en ms
 let fakeGpsLoopActive = false;
 let fakeGpsIntervalId = null;
@@ -209,11 +200,11 @@ async function startLiveCorrectedFakeGps() {
 
   // test initial (et injection immédiate)
   let res;
-  try { res = await startLiveGps(); }
-  catch (e) { appendLog(`❌ startLiveGps exception: ${e?.message || e}`); return; }
+  try { res = await getPosition(); }
+  catch (e) { appendLog(`❌ getPosition exception: ${e?.message || e}`); return; }
 
   if (!res?.ok || !res.coords) {
-    appendLog(`❌ startLiveGps a échoué: ${res?.error?.code || 'UNKNOWN'}`);
+    appendLog(`❌ getPosition a échoué: ${res?.error?.code || 'UNKNOWN'}`);
     return;
   }
 
@@ -231,8 +222,8 @@ async function startLiveCorrectedFakeGps() {
   fakeGpsIntervalId = setInterval(async () => {
     if (!fakeGpsLoopActive) return;
     try {
-      const r = await startLiveGps();
-      if (!r?.ok || !r.coords) return; // on ignore ce tick
+      const r = await getPosition();
+      if (!r?.ok || !r.coords) return;
 
       const corrected = applyCorrectionToCoords(r.coords.latitude, r.coords.longitude);
       window?.locar?.fakeGps?.(corrected.longitude, corrected.latitude);
@@ -262,16 +253,6 @@ async function stopFakeGpsLoop() {
   }
 }
 
-
-/**
- * Applique la correction de calibration à une position donnée
- */
-function applyCorrectionToCoords(lat, lon) {
-  return {
-    latitude: lat + calibLat,
-    longitude: lon + calibLon
-  };
-}
 
 // Bouton START : démarre la simulation GPS continue
 document.getElementById("ApplyCalib")?.addEventListener("click", async () => {
